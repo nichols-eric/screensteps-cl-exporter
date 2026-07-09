@@ -8,7 +8,7 @@ import json
 import os, fnmatch
 import re
 import shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 # new code section: Required for parsing ISO 8601 strings from the API
 import datetime
@@ -100,7 +100,7 @@ def make_dir(directory):
     track_path(directory)
 
 def download_file(directory, url, source_mtime=None, incremental=False): # new code section: parameters added
-    short_path = url.split('/')[-1].split('?')[0]
+    short_path = unquote(url.split('/')[-1].split('?')[0]) # Remove any url encoding
     local_filename = os.path.join(directory, short_path)
     
     # new code section: Track and check if we can skip download
