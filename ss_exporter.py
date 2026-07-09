@@ -10,11 +10,38 @@ import re
 import shutil
 from urllib.parse import urlparse
 
+# new code section: Required for parsing ISO 8601 strings from the API
+import datetime
+
 # globals
 article_file_indicator = '@article.*'
 manual_file_indicator = '@toc.*'
 image_folder_indicator = '@images'
 attach_folder_indicator = '@attachments'
+
+# new code section: Global trackers for incremental deletions
+TRACKED_PATHS = set()
+FULLY_PROCESSED_FOLDERS = set()
+
+# new code section: Helper to track all valid paths we touch or skip
+def track_path(path):
+    if path:
+        abs_path = os.path.abspath(path)
+        TRACKED_PATHS.add(abs_path)
+        parent = os.path.dirname(abs_path)
+        while parent and parent != os.path.dirname(parent):
+            TRACKED_PATHS.add(parent)
+            parent = os.path.dirname(parent)
+
+# new code section: Helper to parse ScreenSteps timestamps
+def get_source_mtime(date_str):
+    if not date_str:
+        return None
+    try:
+        date_str = date_str.replace('Z', '+00:00')
+        return datetime.datetime.fromisoformat(date_str).timestamp()
+    except Exception:
+        return None
 
 # these are the handlebars you can use in an article file
 article_handlebars = [
@@ -46,6 +73,7 @@ def print_help():
     [-a <article_id>]
     [-M <manual_file_name]
     [-i object_identifier]
+    [-I]
 
     Explanations:
     -n This is used for the name of the account (http://<account_name>.screenstepslive.com)
@@ -58,7 +86,8 @@ def print_help():
     -a If you'd like to only download one article, specify the ID here (optional)
     -M Pass in a specific name to use for the manual file. Must pass in the -m parameter.
     -i Specifies how the site, manual, and article files should be named. By default the "id" from ScreenSteps is used. You can set this to "title" or "title_id". "title_id" will use the name with " [ID]" appended to the end.
-
+    -I Incremental mode. Skips downloading files if local files are newer than the source, and removes files no longer in the source. # new code section
+    
     Examples:
     run -n customerknowledge -u mikey -p mypassword -s 15226
     run -n myaccount -u johnsmith -p notAgoodPassword -a 21234
@@ -67,10 +96,19 @@ def print_help():
 def make_dir(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)
+    # new code section: Track created directory
+    track_path(directory)
 
-def download_file(directory, url):
+def download_file(directory, url, source_mtime=None, incremental=False): # new code section: parameters added
     short_path = url.split('/')[-1].split('?')[0]
     local_filename = os.path.join(directory, short_path)
+    
+    # new code section: Track and check if we can skip download
+    track_path(local_filename)
+    if incremental and source_mtime and os.path.exists(local_filename):
+        if os.path.getmtime(local_filename) >= source_mtime:
+            return short_path
+
     r = requests.get(url, stream=True)
     with open(local_filename, 'wb') as f:
         for chunk in r.iter_content(chunk_size=1024):
@@ -140,14 +178,37 @@ def remove_found_files(files):
         if os.path.exists(name):
             os.remove(name)
 
-def write_file(directory, name, rawtext):
-    with open(os.path.join(directory, name), 'wb+') as f:
+def write_file(directory, name, rawtext, source_mtime=None, incremental=False): # new code section: parameters added
+    file_path = os.path.join(directory, name)
+    
+    # new code section: Track and check if we can skip writing
+    track_path(file_path)
+    if incremental and source_mtime and os.path.exists(file_path):
+        if os.path.getmtime(file_path) >= source_mtime:
+            return
+
+    with open(file_path, 'wb+') as f:
         f.write(rawtext.encode('utf-8'))
 
-def copy_and_overwrite(from_path, to_path):
-    if os.path.exists(to_path):
-        shutil.rmtree(to_path)
-    shutil.copytree(from_path, to_path)
+def copy_and_overwrite(from_path, to_path, incremental=False): # new code section: parameters added
+    # new code section: Safely copy templates in incremental mode
+    if incremental:
+        import sys
+        if sys.version_info >= (3, 8):
+            shutil.copytree(from_path, to_path, dirs_exist_ok=True)
+        else:
+            if not os.path.exists(to_path):
+                shutil.copytree(from_path, to_path)
+    else:
+        if os.path.exists(to_path):
+            shutil.rmtree(to_path)
+        shutil.copytree(from_path, to_path)
+        
+    # new code section: Ensure copied template files are tracked so they aren't deleted later
+    for root, dirs, files in os.walk(to_path):
+        track_path(root)
+        for f in files:
+            track_path(os.path.join(root, f))
 
 def read_file(path):
     with open(path) as f:
@@ -176,8 +237,10 @@ def main(argv):
     article_id = ''#a / article
     manual_file_name = ''#M / manual_file_name
     object_identifier = 'id'#i / object_identifier
+    incremental = False #I / incremental # new code section
     try:
-        opts, args = getopt.getopt(argv,"hn:u:p:t:o:s:m:a:M:i:",["site_name=","user_id=","password=","template_folder=","output_folder=","site_id=","manual_id=","article_id=","manual_file_name=","object_identifier="])
+        # new code section: added "I" and "incremental"
+        opts, args = getopt.getopt(argv,"hIn:u:p:t:o:s:m:a:M:i:",["incremental","site_name=","user_id=","password=","template_folder=","output_folder=","site_id=","manual_id=","article_id=","manual_file_name=","object_identifier="])
     except getopt.GetoptError:
         print('use "run.py -h" for help')
         sys.exit(2)
@@ -185,6 +248,8 @@ def main(argv):
         if opt == '-h':
             print_help()
             sys.exit()
+        elif opt in ("-I", "--incremental"): # new code section
+            incremental = True
         elif opt in ("-n", "--site_name"):
             site_name = arg
         elif opt in ("-u", "--user_id"):
@@ -206,7 +271,6 @@ def main(argv):
                 manual_file_name = arg
         elif opt in ("-i", "--object_identifier"):
             object_identifier = arg
-
 
     # check if required attributes exist
     if (site_name == '') or (user_id == '') or (api_token == ''):
@@ -325,8 +389,8 @@ def main(argv):
                     manual_files_ref[each_manual_file] = [
                                                 chapter_split[0], # 0 - pre-chapter
                                                 article_split[0], # 1 - pre-article (chapter)
-                                                article_split[1], # 2 - article
-                                                article_split[2], # 3 - post-article (chapter)
+                                                article_split[2], # 2 - article
+                                                article_split[3], # 3 - post-article (chapter)
                                                 chapter_split[2]] # 4 - post-chapter
 
         # template folder didn't exist
@@ -387,7 +451,7 @@ def main(argv):
                 site_folder = os.path.join(output_folder, this_site_id)
 
             if template_specified:
-                copy_and_overwrite(template_folder, site_folder)
+                copy_and_overwrite(template_folder, site_folder, incremental=incremental) # new code section
             else:
                 make_dir(site_folder)
 
@@ -441,6 +505,9 @@ def main(argv):
                                 this_article = screensteps('sites/' + this_site_id + '/articles/' + this_article_id) # grab ind article
 
                                 this_article_title = this_article['article']['title']
+                                
+                                # new code section: Calculate source modification time for incremental processing
+                                this_article_mtime = get_source_mtime(this_article['article'].get('last_edited_at'))
 
                                 if object_identifier == "title_id":
                                     this_article_identifier = prepare_for_filename(this_article_title) + " [" + this_article_id + "]"
@@ -451,7 +518,7 @@ def main(argv):
 
                                 if is_article_folder:
                                     article_folder = os.path.join(site_folder, find_relative_path(at_article_folder,template_folder), this_article_identifier)
-                                    copy_and_overwrite(at_article_folder, article_folder)
+                                    copy_and_overwrite(at_article_folder, article_folder, incremental=incremental) # new code section
                                 else:
                                     # write html to a file if no templates
                                     article_folder = site_folder
@@ -492,7 +559,7 @@ def main(argv):
                                                 make_dir(files_folder)
 
                                         print(">>>>>> Processing " + _print(content_block['type']) + ": " + _print(content_block['url']))
-                                        new_file_path = download_file(files_folder,content_block['url'])
+                                        new_file_path = download_file(files_folder,content_block['url'], source_mtime=this_article_mtime, incremental=incremental) # new code section
                                         this_articles_files.append([ _decode(content_block['url']), os.path.join(short_files_folder,new_file_path)])
 
                                 article_files_paths = []
@@ -526,12 +593,12 @@ def main(argv):
                                             temp_towrite = temp_towrite.replace(thumbnail_url,(back_dir + this_articles_file[1].replace("\\", "/"))) # Fix windows paths
 
                                         # write file
-                                        write_file(site_folder, temp_filename, temp_towrite)
+                                        write_file(site_folder, temp_filename, temp_towrite, source_mtime=this_article_mtime, incremental=incremental) # new code section
                                         article_files_paths.append(temp_filename)
                                 else:
                                     for this_articles_file in this_articles_files:
                                         article_html = article_html.replace(this_articles_file[0],this_articles_file[1].replace("\\", "/")) # Fix windows paths
-                                    write_file(article_folder, (this_article_identifier + '.html'), article_html)
+                                    write_file(article_folder, (this_article_identifier + '.html'), article_html, source_mtime=this_article_mtime, incremental=incremental) # new code section
                                     article_files_paths.append((this_article_identifier + '.html'))
 
                                 # article replaces on _decode(manual_files_ref[path][2])
@@ -568,14 +635,18 @@ def main(argv):
                             else:
                                 manual_relative_path = os.path.join(site_folder,manual_relative_path)
 
-                            # dump files
-                            if manual_file_name != "":
-                                temp_filename = manual_file_name + os.path.splitext(path)[1]
-                            else:
-                                temp_filename = this_manual_identifier + os.path.splitext(path)[1]
-                            temp_file_contents = (''.join(manual_files_temp[path]) + add_end_manual_file)
-                            temp_file_contents = temp_file_contents.replace("""{{json}}""", json.dumps(chapters, sort_keys=True, indent=2, separators=(',', ': ')))
-                            write_file(manual_relative_path, temp_filename, temp_file_contents)
+                        # dump files
+                        if manual_file_name != "":
+                            temp_filename = manual_file_name + os.path.splitext(path)[1]
+                        else:
+                            temp_filename = this_manual_identifier + os.path.splitext(path)[1]
+                        temp_file_contents = (''.join(manual_files_temp[path]) + add_end_manual_file)
+                        temp_file_contents = temp_file_contents.replace("""{{json}}""", json.dumps(chapters, sort_keys=True, indent=2, separators=(',', ': ')))
+                        write_file(manual_relative_path, temp_filename, temp_file_contents) # leaving without mtime as manual is dynamic compile
+
+            if manual_id == '' and article_id == '':
+                # new code section: Flag this folder as completely processed so ghost files can be swept safely
+                FULLY_PROCESSED_FOLDERS.add(os.path.abspath(site_folder))
 
             # clean up the "@" files that we copied over for each site
             if template_specified:
@@ -588,6 +659,24 @@ def main(argv):
                 except:
                     print("We had trouble deleting the copied template files.  You can ignore any extra files.")
 
+    # new code section: Handle cleaning up "ghost" files that were in the directory but no longer exist in the API source
+    if incremental:
+        print("> Cleaning up deleted files...")
+        for base_folder in FULLY_PROCESSED_FOLDERS:
+            for root, dirs, files in os.walk(base_folder, topdown=False):
+                for name in files:
+                    file_path = os.path.abspath(os.path.join(root, name))
+                    if os.path.exists(file_path) and file_path not in TRACKED_PATHS:
+                        print(">>> Deleting obsolete file: " + file_path)
+                        os.remove(file_path)
+                for name in dirs:
+                    dir_path = os.path.abspath(os.path.join(root, name))
+                    if os.path.exists(dir_path) and dir_path not in TRACKED_PATHS:
+                        try:
+                            os.rmdir(dir_path)
+                            print(">>> Deleting obsolete directory: " + dir_path)
+                        except OSError:
+                            pass
 
 if __name__ == "__main__":
     main(sys.argv[1:])
