@@ -4,14 +4,12 @@ import ssl
 import sys, getopt
 import requests
 import time
+import datetime
 import json
 import os, fnmatch
 import re
 import shutil
 from urllib.parse import urlparse, unquote
-
-# new code section: Required for parsing ISO 8601 strings from the API
-import datetime
 
 # globals
 article_file_indicator = '@article.*'
@@ -387,11 +385,11 @@ def main(argv):
                         add_end_manual_file = ''
 
                     manual_files_ref[each_manual_file] = [
-                                                chapter_split[0], # 0 - pre-chapter
-                                                article_split[0], # 1 - pre-article (chapter)
-                                                article_split[2], # 2 - article
-                                                article_split[3], # 3 - post-article (chapter)
-                                                chapter_split[2]] # 4 - post-chapter
+                                                                chapter_split[0], # 0 - pre-chapter
+                                                                article_split[0], # 1 - pre-article (chapter)
+                                                                article_split[2], # 2 - article
+                                                                article_split[3], # 3 - post-article (chapter)
+                                                                chapter_split[2]] # 4 - post-chapter
 
         # template folder didn't exist
         else:
@@ -527,6 +525,13 @@ def main(argv):
                                 chapter["articles"].append( {'id': this_article['article']['id'], 'title': this_article_identifier} )
 
                                 article_html = this_article['article']['html_body']
+
+                                # --- ADD HEADERS AND ORIGINAL CANONICAL LINKS TO TEXT STREAM ---
+                                article_last_edited = _decode(this_article['article'].get('last_edited_at', ''))
+                                custom_header_block = f"<h1>{this_article_title}</h1>\n<p>Modified Date: {article_last_edited}</p>\n<p>Original Article Link: <a href=\"https://mcda.screenstepslive.com/a/{this_article_id}\">https://mcda.screenstepslive.com/a/{this_article_id}</a></p>\n"
+                                
+                                # Prepend the new header blocks to the text layouts
+                                article_html = custom_header_block + article_html
 
                                 # loop through attached files
                                 this_articles_files = []
