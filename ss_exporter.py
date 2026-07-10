@@ -597,7 +597,18 @@ def main(argv):
                                         article_files_paths.append(temp_filename)
                                 else:
                                     for this_articles_file in this_articles_files:
-                                        article_html = article_html.replace(this_articles_file[0],this_articles_file[1].replace("\\", "/")) # Fix windows paths
+                                        image_url = this_articles_file[0].split("?", 1)[0]
+                                        local_path = this_articles_file[1].replace("\\", "/")
+                                        
+                                        # Replace the exact original URL (usually catches the href)
+                                        article_html = article_html.replace(image_url, local_path) 
+                                        
+                                        # When not using a template catch and replace ScreenSteps resized images (catches the src) or theyll get skipped
+                                        if "/original/" in image_url:
+                                            article_html = article_html.replace(image_url.replace("/original/", "/medium/"), local_path)
+                                            article_html = article_html.replace(image_url.replace("/original/", "/large/"), local_path)
+                                            article_html = article_html.replace(image_url.replace("/original/", "/small/"), local_path)
+                                            
                                     write_file(article_folder, (this_article_identifier + '.html'), article_html, source_mtime=this_article_mtime, incremental=incremental) # new code section
                                     article_files_paths.append((this_article_identifier + '.html'))
 
