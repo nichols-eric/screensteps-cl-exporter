@@ -528,7 +528,7 @@ def main(argv):
 
                                 # --- ADD HEADERS AND ORIGINAL CANONICAL LINKS TO TEXT STREAM ---
                                 article_last_edited = _decode(this_article['article'].get('last_edited_at', ''))
-                                custom_header_block = f"<h1>{this_article_title}</h1>\n<p>Modified Date: {article_last_edited}</p>\n<p>Original Article Link: <a href=\"https://mcda.screenstepslive.com/a/{this_article_id}\">https://mcda.screenstepslive.com/a/{this_article_id}</a></p>\n"
+                                custom_header_block = f"<h1>{this_article_title}</h1>\n<p>Modified Date: {article_last_edited}</p>\n<p>Original Article Link: <a href=\"https://{site_name}.screenstepslive.com/a/{this_article_id}\">https://{site_name}.screenstepslive.com/a/{this_article_id}</a></p>\n"
                                 
                                 # Prepend the new header blocks to the text layouts
                                 article_html = custom_header_block + article_html
